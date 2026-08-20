@@ -1,0 +1,7 @@
+serial-relay (0.1.0) unstable; urgency=medium
+
+  * Initial release.
+  * Supports 4-channel USB relay control via CH340 serial.
+  * Configurable baud rate at compile time.
+
+ -- linaro <linaro@localhost>  Fri, 08 May 2026 15:00:00 +0800

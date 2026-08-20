@@ -1,0 +1,22 @@
+[package]
+name = "serial-relay"
+version = "0.1.0"
+edition = "2024"
+description = "4-channel USB relay controller via serial (CH340)"
+repository = ""
+license = "MIT"
+
+[[bin]]
+name = "serial_relay"
+path = "src/main.rs"
+
+# Serial port baud rate — change here to match your relay module
+[package.metadata]
+baud_rate = 9600
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serialport = "4.9"
+
+[build-dependencies]
+toml = "1.1"

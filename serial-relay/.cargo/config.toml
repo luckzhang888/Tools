@@ -1,0 +1,5 @@
+# Cross-compilation / static linking configuration.
+# For static linking, use:  ./build-deb.sh static  or  make static
+#
+# Note: crt-static must be passed via CARGO_BUILD_RUSTFLAGS (not .cargo/config)
+# to avoid breaking proc-macro crates during native compilation.

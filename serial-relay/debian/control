@@ -1,0 +1,15 @@
+Source: serial-relay
+Section: electronics
+Priority: optional
+Maintainer: linaro <linaro@localhost>
+Build-Depends: debhelper-compat (= 13), cargo, rustc
+Standards-Version: 4.6.2
+Homepage: https://github.com/example/serial-relay
+
+Package: serial-relay
+Architecture: arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: 4-channel USB relay controller (CH340)
+ Control a 4-channel USB relay module over RS-232 serial via CH340.
+ Supports on/off/toggle/status operations for each channel.
+ Baud rate configurable at compile time.
