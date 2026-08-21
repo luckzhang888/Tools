@@ -1,177 +1,136 @@
 # serial-relay
 
-通过 CH340 USB 串口控制四路继电器的命令行工具，协议为 9600/8N1。
+[简体中文完整手册](README.zh-CN.md) | [Full English Guide](README.en.md)
 
-已在 MYD-YR3506（ARMv7、Debian 12）上验证：设备节点 `/dev/ttyUSB0`，
-四路均可执行 ON、OFF 和状态回读。
+`serial-relay` is a one-shot command-line tool for controlling a four-channel
+relay board through a CH340 USB-to-serial adapter. Each command performs one
+operation and exits; it is not a background service.
 
-## 功能
+`serial-relay` 是一个通过 CH340 USB 转串口模块控制四路继电器的命令行工具。
+程序每执行一次命令就退出，不是后台服务。
 
-- CH1～CH4 独立执行 `on`、`off`、`toggle`、`status`
-- 默认设备节点 `/dev/ttyUSB0`，可通过 `--device` 覆盖
-- 校验四字节响应的帧头、通道、状态和校验和
-- 支持 amd64、arm64、armhf（ARMv7）构建和 Debian 打包
-- 提供只读状态检查及自动恢复原状态的硬件测试脚本
+Verified / 已验证环境：
 
-## 硬件与权限
+- MYD-YR3506, Debian 12, ARMv7 hard-float (`armhf`)
+- CH340 (`1a86:7523`), default device / 默认设备：`/dev/ttyUSB0`
+- Serial settings / 串口参数：9600 baud, 8N1
+- CH1–CH4 ON, OFF, status query, and state restoration
 
-- USB 转串口：CH340（VID `1a86`、PID `7523`）
-- 默认节点：`/dev/ttyUSB0`
-- 推荐节点：`/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`
-- 当前用户需要属于 `dialout` 组
+## 中文快速开始
 
-```bash
-ls -l /dev/ttyUSB0 /dev/serial/by-id/
-sudo usermod -aG dialout "$USER"
-```
-
-修改用户组后需要重新登录。
-
-## 使用
-
-端口参数从 0 开始：`-p 0`～`-p 3` 分别对应 CH1～CH4。
+在 Ubuntu/Debian x86_64 主机上安装工具链并交叉编译 ARMv7 程序：
 
 ```bash
-# CH1 状态（默认使用 /dev/ttyUSB0）
-serial-relay -p 0 status
+git clone https://github.com/luckzhang888/Tools.git
+cd Tools/serial-relay
 
-# CH1 打开和关闭
-serial-relay -p 0 on
-serial-relay -p 0 off
+sudo apt-get update
+sudo apt-get install -y curl build-essential \
+  gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf file
 
-# 使用不会随 ttyUSB 编号变化的持久路径
-serial-relay \
-  -d /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
-  -p 3 status
-```
-
-`open` 等价于 `on`，`close` 等价于 `off`。
-
-## 构建
-
-最低 Rust 版本为 1.85。
-
-### 原生构建
-
-```bash
-cargo build --release --locked
-./target/release/serial-relay --help
-```
-
-安装到 `/usr/local/bin`：
-
-```bash
-make build
-sudo make install
-```
-
-### x86_64 主机交叉构建
-
-ARMv7/armhf：
-
-```bash
-sudo apt-get install gcc-arm-linux-gnueabihf
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
 rustup target add armv7-unknown-linux-gnueabihf
+
 TARGET=armv7-unknown-linux-gnueabihf make build
+file target/armv7-unknown-linux-gnueabihf/release/serial-relay
 ```
 
-ARM64：
+部署到设备：
 
 ```bash
-sudo apt-get install gcc-aarch64-linux-gnu
-rustup target add aarch64-unknown-linux-gnu
-TARGET=aarch64-unknown-linux-gnu make build
+scp target/armv7-unknown-linux-gnueabihf/release/serial-relay \
+  myir@192.168.1.49:/tmp/serial-relay
+
+ssh myir@192.168.1.49
+chmod +x /tmp/serial-relay
+/tmp/serial-relay --version
+sudo install -m 0755 /tmp/serial-relay /usr/local/bin/serial-relay
+rm /tmp/serial-relay
 ```
 
-对应输出分别位于：
-
-```text
-target/armv7-unknown-linux-gnueabihf/release/serial-relay
-target/aarch64-unknown-linux-gnu/release/serial-relay
-```
-
-## Debian 包
-
-本机打包：
+查询和控制继电器：
 
 ```bash
-./build-deb.sh deb
+# CH1～CH4 对应端口 0～3
+for port in 0 1 2 3; do
+  serial-relay -p "$port" status
+done
+
+serial-relay -p 0 on
+serial-relay -p 0 status
+serial-relay -p 0 off
 ```
 
-交叉构建 ARMv7 包：
+程序默认使用 `/dev/ttyUSB0`。其他节点可通过
+`--device /dev/ttyUSB1` 指定。完整的编译、Debian 打包、权限配置、四路硬件测试、
+故障排查和协议说明请阅读[简体中文完整手册](README.zh-CN.md)。
+
+> `on`、`off` 和硬件测试脚本的 `--exercise` 会实际切换继电器。执行前请确认
+> 外接负载允许动作。
+
+## English quick start
+
+Install the toolchain and cross-compile for ARMv7 on an x86_64 Ubuntu/Debian
+host:
 
 ```bash
-TARGET=armv7-unknown-linux-gnueabihf \
-PKG_ARCH=armhf \
-./build-deb.sh deb
+git clone https://github.com/luckzhang888/Tools.git
+cd Tools/serial-relay
+
+sudo apt-get update
+sudo apt-get install -y curl build-essential \
+  gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf file
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustup target add armv7-unknown-linux-gnueabihf
+
+TARGET=armv7-unknown-linux-gnueabihf make build
+file target/armv7-unknown-linux-gnueabihf/release/serial-relay
 ```
 
-输出为 `dist/serial-relay_<版本>_<架构>.deb`，安装方式：
+Deploy it to the device:
 
 ```bash
-sudo dpkg -i dist/serial-relay_0.1.0_armhf.deb
+scp target/armv7-unknown-linux-gnueabihf/release/serial-relay \
+  myir@192.168.1.49:/tmp/serial-relay
+
+ssh myir@192.168.1.49
+chmod +x /tmp/serial-relay
+/tmp/serial-relay --version
+sudo install -m 0755 /tmp/serial-relay /usr/local/bin/serial-relay
+rm /tmp/serial-relay
 ```
 
-GitHub Actions 会为 amd64、arm64、armhf 构建二进制及 Debian 包。
-推送 `serial-relay-v*` 标签时会自动创建 Release。
-
-## 测试
-
-代码检查和单元测试不需要继电器硬件：
+Query and control the relays:
 
 ```bash
-make check
+# CH1 through CH4 map to ports 0 through 3
+for port in 0 1 2 3; do
+  serial-relay -p "$port" status
+done
+
+serial-relay -p 0 on
+serial-relay -p 0 status
+serial-relay -p 0 off
 ```
 
-只查询四路状态，不改变继电器：
+The default serial device is `/dev/ttyUSB0`. Use
+`--device /dev/ttyUSB1` when the device has another name. See the
+[full English guide](README.en.md) for native and cross compilation, Debian
+packaging, serial permissions, four-channel hardware tests, troubleshooting,
+and protocol details.
 
-```bash
-./scripts/test-device.sh --device /dev/ttyUSB0
-```
+> `on`, `off`, and the hardware test script's `--exercise` option physically
+> switch the relays. Make sure the connected load can be switched safely.
 
-依次验证四路 ON/OFF，并在退出时恢复测试前状态：
+## Documentation / 文档
 
-```bash
-./scripts/test-device.sh --exercise --device /dev/ttyUSB0
-```
-
-`--exercise` 会实际吸合和释放继电器，运行前应确认外接设备允许切换。
-
-## 串口协议
-
-命令和四字节状态响应格式均为：
-
-```text
-[0xA0, channel, opcode/state, checksum]
-checksum = (0xA0 + channel + opcode/state) & 0xFF
-```
-
-| 值 | 含义 |
+| Document / 文档 | Description / 内容 |
 |---|---|
-| channel `0x01`～`0x04` | CH1～CH4 |
-| opcode `0x00` | OFF |
-| opcode `0x01` | ON |
-| opcode `0x04` | TOGGLE |
-| opcode `0x05` | STATUS |
-
-例如 CH1 ON 为 `A0 01 01 A2`，CH4 STATUS 为 `A0 04 05 A9`。
-
-## 项目结构
-
-```text
-serial-relay/
-├── Cargo.toml                 # Rust 包和波特率配置
-├── Cargo.lock                 # 固定依赖版本
-├── build.rs                   # 将波特率写入编译环境
-├── src/main.rs                # CLI 与协议实现、单元测试
-├── build-deb.sh               # 构建和 Debian 打包入口
-├── scripts/package-deb.sh     # 从二进制生成 .deb
-├── scripts/test-device.sh     # 四路硬件测试
-├── debian/                    # 标准 Debian 打包元数据
-└── Makefile                   # 常用构建命令
-```
-
-波特率由 `Cargo.toml` 中的 `[package.metadata].baud_rate` 设置，修改后重新构建。
+| [README.zh-CN.md](README.zh-CN.md) | 中文完整手册：编译、打包、部署、使用、测试和排障 |
+| [README.en.md](README.en.md) | Complete English build, deployment, usage, test, and troubleshooting guide |
 
 ## License
 
