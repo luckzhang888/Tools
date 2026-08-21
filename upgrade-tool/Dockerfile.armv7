@@ -1,0 +1,14 @@
+FROM debian:bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN dpkg --add-architecture armhf \
+    && apt-get -o Acquire::ForceIPv4=true update -qq \
+    && apt-get -o Acquire::ForceIPv4=true install -y -qq \
+        ca-certificates \
+        cmake \
+        file \
+        g++-arm-linux-gnueabihf \
+        git \
+        libusb-1.0-0-dev:armhf \
+        make

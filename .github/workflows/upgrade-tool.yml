@@ -1,0 +1,41 @@
+name: upgrade-tool
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "upgrade-tool/**"
+      - ".github/workflows/upgrade-tool.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "upgrade-tool/**"
+      - ".github/workflows/upgrade-tool.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: upgrade-tool
+    shell: bash
+
+jobs:
+  armv7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scripts
+        run: make check
+      - name: Build static ARMv7 binary
+        run: make build-armv7
+      - name: Verify artifact
+        run: |
+          file dist/upgrade_tool-armhf-static
+          file dist/upgrade_tool-armhf-static | grep -q 'ELF 32-bit.*ARM.*statically linked'
+          cd dist
+          sha256sum --check upgrade_tool-armhf-static.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-tool-armhf
+          path: |
+            upgrade-tool/dist/upgrade_tool-armhf-static
+            upgrade-tool/dist/upgrade_tool-armhf-static.sha256
