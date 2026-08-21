@@ -1,0 +1,4 @@
+[submodule "upgrade-tool"]
+	path = upgrade-tool
+	url = https://github.com/bitshelf/upgrade_tool.git
+	branch = main
