@@ -11,15 +11,13 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set");
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let cargo_toml_path = Path::new(&manifest_dir).join("Cargo.toml");
-    let cargo_toml = fs::read_to_string(&cargo_toml_path)
-        .expect("Failed to read Cargo.toml");
+    let cargo_toml = fs::read_to_string(&cargo_toml_path).expect("Failed to read Cargo.toml");
 
     // Parse the TOML and extract [package.metadata].baud_rate
-    let parsed: toml::Table = toml::from_str(&cargo_toml)
-        .expect("Failed to parse Cargo.toml as TOML");
+    let parsed: toml::Table =
+        toml::from_str(&cargo_toml).expect("Failed to parse Cargo.toml as TOML");
 
     let baud_rate = parsed
         .get("package")

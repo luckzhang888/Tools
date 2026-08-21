@@ -1,0 +1,96 @@
+name: serial-relay
+
+on:
+  push:
+    branches: [main]
+    tags: ["serial-relay-v*"]
+    paths:
+      - "serial-relay/**"
+      - ".github/workflows/serial-relay.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "serial-relay/**"
+      - ".github/workflows/serial-relay.yml"
+
+defaults:
+  run:
+    working-directory: serial-relay
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting, lints and tests
+        run: make check
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    container: rust:bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            compiler_package: gcc
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            compiler_package: gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+            compiler_package: gcc-arm-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install target toolchain
+        run: |
+          apt-get -o Acquire::ForceIPv4=true update -qq
+          apt-get -o Acquire::ForceIPv4=true install -y -qq \
+            "${{ matrix.compiler_package }}" binutils file
+          rustup target add "${{ matrix.target }}"
+      - name: Build and package
+        env:
+          TARGET: ${{ matrix.target }}
+          PKG_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ./build-deb.sh deb
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          binary="target/${TARGET}/release/serial-relay"
+          file "${binary}"
+          cp "${binary}" "dist/serial-relay-${version}-${PKG_ARCH}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: serial-relay-${{ matrix.arch }}
+          path: |
+            serial-relay/dist/*.deb
+            serial-relay/dist/serial-relay-*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/serial-relay-v')
+    needs: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: serial-relay-*
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "serial-relay ${{ github.ref_name }}" \
+            --generate-notes

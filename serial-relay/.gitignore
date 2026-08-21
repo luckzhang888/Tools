@@ -1,8 +1,7 @@
 # Build artifacts
 /target/
 /*.deb
-/serial-static
-/deb-pkg/
+/dist/
 
 # Editor
 *~

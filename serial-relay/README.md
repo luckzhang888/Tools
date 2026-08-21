@@ -1,272 +1,177 @@
 # serial-relay
 
-4-channel USB relay controller via RS-232 serial (CH340 chipset, 9600/8N1).
+通过 CH340 USB 串口控制四路继电器的命令行工具，协议为 9600/8N1。
 
-## Hardware
+已在 MYD-YR3506（ARMv7、Debian 12）上验证：设备节点 `/dev/ttyUSB0`，
+四路均可执行 ON、OFF 和状态回读。
 
-- **Chip**: CH340 USB-to-UART bridge (VID `1a86`, PID `7523`)
-- **Driver**: `ch341` (mainline kernel)
-- **Device node**: `/dev/ttyUSB1` (or `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`)
-- **Relay**: 4-channel optocoupler relay module
+## 功能
 
-## Protocol
+- CH1～CH4 独立执行 `on`、`off`、`toggle`、`status`
+- 默认设备节点 `/dev/ttyUSB0`，可通过 `--device` 覆盖
+- 校验四字节响应的帧头、通道、状态和校验和
+- 支持 amd64、arm64、armhf（ARMv7）构建和 Debian 打包
+- 提供只读状态检查及自动恢复原状态的硬件测试脚本
 
-Each command is a 4-byte packet: `[0xA0, channel, opcode, checksum]`
+## 硬件与权限
 
-| Byte | Range | Description |
-|------|-------|-------------|
-| 0 | `0xA0` | Fixed header |
-| 1 | `0x01`–`0x04` | Channel number (CH1–CH4) |
-| 2 | `0x00`–`0x05` | Opcode (see table below) |
-| 3 | `0x00`–`0xFF` | Checksum = `(0xA0 + channel + opcode) & 0xFF` |
-
-### Command Table
-
-| Command (hex) | Function | Channel |
-|---------------|----------|---------|
-| `A0 01 01 A2` | CH1 ON | 1 |
-| `A0 01 00 A1` | CH1 OFF | 1 |
-| `A0 01 03 A4` | CH1 ON with feedback | 1 |
-| `A0 01 02 A3` | CH1 OFF with feedback | 1 |
-| `A0 01 04 A5` | CH1 TOGGLE | 1 |
-| `A0 01 05 A6` | CH1 STATUS query | 1 |
-| `A0 02 01 A3` | CH2 ON | 2 |
-| `A0 02 00 A2` | CH2 OFF | 2 |
-| `A0 02 03 A5` | CH2 ON with feedback | 2 |
-| `A0 02 02 A4` | CH2 OFF with feedback | 2 |
-| `A0 02 04 A6` | CH2 TOGGLE | 2 |
-| `A0 02 05 A7` | CH2 STATUS query | 2 |
-| `A0 03 01 A4` | CH3 ON | 3 |
-| `A0 03 00 A3` | CH3 OFF | 3 |
-| `A0 03 03 A6` | CH3 ON with feedback | 3 |
-| `A0 03 02 A5` | CH3 OFF with feedback | 3 |
-| `A0 03 04 A7` | CH3 TOGGLE | 3 |
-| `A0 03 05 A8` | CH3 STATUS query | 3 |
-| `A0 04 01 A5` | CH4 ON | 4 |
-| `A0 04 00 A4` | CH4 OFF | 4 |
-| `A0 04 03 A7` | CH4 ON with feedback | 4 |
-| `A0 04 02 A6` | CH4 OFF with feedback | 4 |
-| `A0 04 04 A8` | CH4 TOGGLE | 4 |
-| `A0 04 05 A9` | CH4 STATUS query | 4 |
-
-### Opcode Reference
-
-| Opcode | Action | Description |
-|--------|--------|-------------|
-| `0x00` | OFF | Open relay contacts |
-| `0x01` | ON | Close relay contacts |
-| `0x02` | OFF + feedback | OFF with response expected |
-| `0x03` | ON + feedback | ON with response expected |
-| `0x04` | TOGGLE | Flip current state |
-| `0x05` | STATUS | Query current state (returns 1-byte response) |
-
-## Build
-
-### Prerequisites
-
-- Rust toolchain (install via [rustup.rs](https://rustup.rs)):
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-
-### Native Build
+- USB 转串口：CH340（VID `1a86`、PID `7523`）
+- 默认节点：`/dev/ttyUSB0`
+- 推荐节点：`/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`
+- 当前用户需要属于 `dialout` 组
 
 ```bash
-# Build release binary
-cargo build --release
-
-# Binary location
-./target/release/serial --help
+ls -l /dev/ttyUSB0 /dev/serial/by-id/
+sudo usermod -aG dialout "$USER"
 ```
 
-### ARM64 Cross-Compilation (from x86 host)
+修改用户组后需要重新登录。
+
+## 使用
+
+端口参数从 0 开始：`-p 0`～`-p 3` 分别对应 CH1～CH4。
 
 ```bash
-# Install ARM64 target
+# CH1 状态（默认使用 /dev/ttyUSB0）
+serial-relay -p 0 status
+
+# CH1 打开和关闭
+serial-relay -p 0 on
+serial-relay -p 0 off
+
+# 使用不会随 ttyUSB 编号变化的持久路径
+serial-relay \
+  -d /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
+  -p 3 status
+```
+
+`open` 等价于 `on`，`close` 等价于 `off`。
+
+## 构建
+
+最低 Rust 版本为 1.85。
+
+### 原生构建
+
+```bash
+cargo build --release --locked
+./target/release/serial-relay --help
+```
+
+安装到 `/usr/local/bin`：
+
+```bash
+make build
+sudo make install
+```
+
+### x86_64 主机交叉构建
+
+ARMv7/armhf：
+
+```bash
+sudo apt-get install gcc-arm-linux-gnueabihf
+rustup target add armv7-unknown-linux-gnueabihf
+TARGET=armv7-unknown-linux-gnueabihf make build
+```
+
+ARM64：
+
+```bash
+sudo apt-get install gcc-aarch64-linux-gnu
 rustup target add aarch64-unknown-linux-gnu
-
-# Build with Docker-based cross tool
-cargo install cross
-cross build --release --target aarch64-unknown-linux-gnu
+TARGET=aarch64-unknown-linux-gnu make build
 ```
 
-### Static Build (musl, no dynamic dependencies)
+对应输出分别位于：
 
-Produces a fully self-contained binary with no external library dependencies:
+```text
+target/armv7-unknown-linux-gnueabihf/release/serial-relay
+target/aarch64-unknown-linux-gnu/release/serial-relay
+```
+
+## Debian 包
+
+本机打包：
 
 ```bash
-# Install musl target (use a mirror if download is slow, see below)
-rustup target add aarch64-unknown-linux-musl
-
-# Build static binary
-make static
-# or
-cargo build --release --target aarch64-unknown-linux-musl
-
-# Verify — should say "not a dynamic executable"
-ldd target/aarch64-unknown-linux-musl/release/serial
-```
-
-#### Rustup mirror (for slow downloads in mainland China)
-
-```bash
-# Set mirror before rustup commands
-export RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup
-export RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
-
-# Then install targets normally
-rustup target add aarch64-unknown-linux-musl
-```
-
-### Configuring Baud Rate
-
-Edit `[package.metadata]` in `Cargo.toml`:
-
-```toml
-[package.metadata]
-baud_rate = 9600     # Change this to match your relay module
-```
-
-Then rebuild. The baud rate is embedded at compile time.
-
-## Usage
-
-```bash
-# Turn CH1 ON
-serial -d /dev/ttyUSB1 -p 0 on
-
-# Turn CH1 OFF
-serial -d /dev/ttyUSB1 -p 0 off
-
-# Turn CH2 ON
-serial -d /dev/ttyUSB1 -p 1 on
-
-# Turn CH2 OFF
-serial -d /dev/ttyUSB1 -p 1 off
-
-# Toggle CH3
-serial -d /dev/ttyUSB1 -p 2 toggle
-
-# Query CH4 status
-serial -d /dev/ttyUSB1 -p 3 status
-
-# Use persistent device path (avoids /dev/ttyUSB* renumbering)
-serial -d /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -p 0 on
-```
-
-Port mapping: `-p 0` = CH1, `-p 1` = CH2, `-p 2` = CH3, `-p 3` = CH4.
-
-## Debian Package
-
-### On the target ARM64 device
-
-```bash
-# Transfer source to target
-scp serial-relay-src.tar.gz linaro@192.168.1.189:/tmp/
-
-# SSH into target
-ssh linaro@192.168.1.189
-
-cd /tmp
-tar xzf serial-relay-src.tar.gz -C serial-relay
-cd serial-relay
-
-# Build dynamic .deb
 ./build-deb.sh deb
-
-# Or build static .deb (no runtime deps)
-./build-deb.sh static-deb
-
-# Install (requires root)
-sudo dpkg -i serial-relay_0.1.0_arm64.deb
-# Or for static version:
-sudo dpkg -i serial-relay-static_0.1.0_arm64.deb
-
-# Or install directly from build
-./build-deb.sh install
 ```
 
-### Package commands
+交叉构建 ARMv7 包：
 
 ```bash
-./build-deb.sh deb        # Build dynamic binary and create .deb
-./build-deb.sh static     # Build static binary (musl)
-./build-deb.sh static-deb # Build static binary and create .deb
-./build-deb.sh install    # Build and install to /usr/local/bin
-./build-deb.sh uninstall  # Remove installed binary
-./build-deb.sh clean      # Remove build artifacts
+TARGET=armv7-unknown-linux-gnueabihf \
+PKG_ARCH=armhf \
+./build-deb.sh deb
 ```
 
-## Debugging
-
-### Check the relay device is recognized
+输出为 `dist/serial-relay_<版本>_<架构>.deb`，安装方式：
 
 ```bash
-# List USB serial devices
-ls -la /dev/serial/by-id/
-
-# Check device attributes
-sudo udevadm info --query=all --name=/dev/ttyUSB1
-
-# Walk the device tree
-sudo udevadm info --attribute-walk --name=/dev/ttyUSB1 | grep -E 'DRIVERS|idVendor|idProduct|product'
+sudo dpkg -i dist/serial-relay_0.1.0_armhf.deb
 ```
 
-Expected: `DRIVERS=="ch341"`, `ATTRS{idVendor}=="1a86"`, `ATTRS{idProduct}=="7523"`.
+GitHub Actions 会为 amd64、arm64、armhf 构建二进制及 Debian 包。
+推送 `serial-relay-v*` 标签时会自动创建 Release。
 
-### Manual serial test with Python
+## 测试
+
+代码检查和单元测试不需要继电器硬件：
 
 ```bash
-# Install pyserial
-uv pip install pyserial
-
-# Turn CH1 ON
-uv run python3 -c "
-import serial
-s = serial.Serial('/dev/ttyUSB1', 9600, timeout=0.8)
-# CH1 ON: 0xA0 0x01 0x01 0xA2
-s.write(bytes([0xA0, 0x01, 0x01, 0xA2]))
-s.close()
-"
+make check
 ```
 
-### Permission denied on /dev/ttyUSB*
-
-The `linaro` user needs to be in the `dialout` group:
+只查询四路状态，不改变继电器：
 
 ```bash
-sudo usermod -a -G dialout linaro
-# Log out and back in, or use:
-newgrp dialout
+./scripts/test-device.sh --device /dev/ttyUSB0
 ```
 
-### Silent / no relay click
+依次验证四路 ON/OFF，并在退出时恢复测试前状态：
 
-- Verify the relay module has external 5V power (USB data cable alone may not supply enough current)
-- Check the command bytes with `serial` tool: it prints the hex packet on stderr
-- Test with the Python snippet above to rule out the Rust binary
-
-## Project Structure
-
+```bash
+./scripts/test-device.sh --exercise --device /dev/ttyUSB0
 ```
+
+`--exercise` 会实际吸合和释放继电器，运行前应确认外接设备允许切换。
+
+## 串口协议
+
+命令和四字节状态响应格式均为：
+
+```text
+[0xA0, channel, opcode/state, checksum]
+checksum = (0xA0 + channel + opcode/state) & 0xFF
+```
+
+| 值 | 含义 |
+|---|---|
+| channel `0x01`～`0x04` | CH1～CH4 |
+| opcode `0x00` | OFF |
+| opcode `0x01` | ON |
+| opcode `0x04` | TOGGLE |
+| opcode `0x05` | STATUS |
+
+例如 CH1 ON 为 `A0 01 01 A2`，CH4 STATUS 为 `A0 04 05 A9`。
+
+## 项目结构
+
+```text
 serial-relay/
-├── Cargo.toml            # Package config + baud rate setting
-├── Cargo.lock            # Locked dependency versions
-├── build.rs              # Reads baud_rate from Cargo.toml at compile time
-├── src/
-│   └── main.rs           # CLI and serial control logic
-├── .cargo/
-│   └── config.toml       # Target-specific rustflags / linker config
-├── debian/               # Debian packaging (dpkg-buildpackage)
-│   ├── control
-│   ├── rules
-│   ├── changelog
-│   ├── compat
-│   └── install
-├── build-deb.sh           # Standalone build+deb script (no debhelper needed)
-├── Makefile               # Alternative build targets (make/make static/make deb)
-└── README.md
+├── Cargo.toml                 # Rust 包和波特率配置
+├── Cargo.lock                 # 固定依赖版本
+├── build.rs                   # 将波特率写入编译环境
+├── src/main.rs                # CLI 与协议实现、单元测试
+├── build-deb.sh               # 构建和 Debian 打包入口
+├── scripts/package-deb.sh     # 从二进制生成 .deb
+├── scripts/test-device.sh     # 四路硬件测试
+├── debian/                    # 标准 Debian 打包元数据
+└── Makefile                   # 常用构建命令
 ```
+
+波特率由 `Cargo.toml` 中的 `[package.metadata].baud_rate` 设置，修改后重新构建。
 
 ## License
 

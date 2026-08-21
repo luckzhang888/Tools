@@ -1,79 +1,94 @@
 #!/usr/bin/env bash
-# scripts/package-deb.sh — Build a .deb package from a static binary.
+# Create a Debian package from an already-built serial-relay binary.
 #
-# Usage:  ./scripts/package-deb.sh <binary> <arch> [output-dir]
-#
-# Creates a .deb in the specified output directory (default: dist/).
-# Uses ar + tar — no dpkg-deb required, works on any Linux.
-#
-# Examples:
-#   ./scripts/package-deb.sh target/x86_64-unknown-linux-musl/release/serial_relay amd64
-#   ./scripts/package-deb.sh target/aarch64-unknown-linux-musl/release/serial_relay arm64 dist/
+# Usage: ./scripts/package-deb.sh <binary> <arch> [output-dir]
 
 set -euo pipefail
 
-BIN="${1:?Usage: $0 <binary> <arch> [output-dir]}"
-ARCH="${2:?Usage: $0 <binary> <arch> [output-dir]}"
-OUT_DIR="${3:-dist}"
+BIN=${1:?Usage: $0 <binary> <arch> [output-dir]}
+ARCH=${2:?Usage: $0 <binary> <arch> [output-dir]}
+OUT_DIR=${3:-dist}
+PACKAGE_DEPENDS=${PACKAGE_DEPENDS-'libc6, libgcc-s1'}
 
-# ── Extract metadata from Cargo.toml ──
-PKG_NAME="serial-relay-static"
-VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-BAUD=$(grep baud_rate Cargo.toml | head -1 | grep -oP '\d+')
+[[ -f "${BIN}" ]] || {
+    echo "ERROR: binary not found: ${BIN}" >&2
+    exit 1
+}
 
-if [ ! -f "${BIN}" ]; then
-  echo "ERROR: binary not found: ${BIN}" >&2
-  exit 1
-fi
+case "${ARCH}" in
+    amd64 | arm64 | armhf) ;;
+    *)
+        echo "ERROR: unsupported Debian architecture: ${ARCH}" >&2
+        exit 1
+        ;;
+esac
 
-DEB_NAME="${PKG_NAME}_${VER}_${ARCH}"
-DEB_ROOT="deb-pkg/${DEB_NAME}"
+VER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+BAUD=$(sed -n 's/^baud_rate = \([0-9][0-9]*\).*/\1/p' Cargo.toml | head -1)
+[[ -n "${VER}" && -n "${BAUD}" ]] || {
+    echo "ERROR: cannot read version or baud rate from Cargo.toml" >&2
+    exit 1
+}
 
-echo "Packaging ${DEB_NAME}.deb ..."
-rm -rf "deb-pkg"
-mkdir -p "${DEB_ROOT}/DEBIAN" \
-         "${DEB_ROOT}/usr/bin" \
-         "${DEB_ROOT}/usr/share/doc/${PKG_NAME}"
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "ERROR: required tool not found: $1" >&2
+        exit 1
+    }
+}
 
-install -m 755 "${BIN}" "${DEB_ROOT}/usr/bin/serial_relay"
+require_tool ar
+require_tool tar
 
-# ── DEBIAN/control ──
-python3 -c "
-control = '''Package: ${PKG_NAME}
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/serial-relay-deb.XXXXXX")
+trap 'rm -rf -- "${STAGE}"' EXIT
+
+CONTROL_ROOT="${STAGE}/control"
+DATA_ROOT="${STAGE}/data"
+mkdir -p "${CONTROL_ROOT}" "${DATA_ROOT}/usr/bin" \
+    "${DATA_ROOT}/usr/share/doc/serial-relay" "${OUT_DIR}"
+
+chmod 0755 "${CONTROL_ROOT}" "${DATA_ROOT}" "${DATA_ROOT}/usr" \
+    "${DATA_ROOT}/usr/bin" "${DATA_ROOT}/usr/share" \
+    "${DATA_ROOT}/usr/share/doc" "${DATA_ROOT}/usr/share/doc/serial-relay"
+
+install -m 0755 "${BIN}" "${DATA_ROOT}/usr/bin/serial-relay"
+
+{
+    cat <<EOF
+Package: serial-relay
 Version: ${VER}
 Architecture: ${ARCH}
-Maintainer: linaro <linaro@localhost>
+Maintainer: luckzhang888 <luckzhang888@users.noreply.github.com>
 Section: electronics
 Priority: optional
-Conflicts: serial-relay
-Replaces: serial-relay
-Description: 4-channel USB relay controller — static build (CH340)
- Control a 4-channel USB relay module over RS-232 serial via CH340.
+EOF
+    if [[ -n "${PACKAGE_DEPENDS}" ]]; then
+        echo "Depends: ${PACKAGE_DEPENDS}"
+    fi
+    cat <<EOF
+Description: 4-channel USB relay controller (CH340)
+ Control a 4-channel USB relay module over a CH340 serial adapter.
  Supports on/off/toggle/status operations for each channel.
- Fully static binary — no external library dependencies.
- Baud rate: ${BAUD}
-'''
-with open('${DEB_ROOT}/DEBIAN/control', 'w') as f:
-    f.write(control)
-"
+ Default device: /dev/ttyUSB0. Baud rate: ${BAUD}.
+EOF
+} >"${CONTROL_ROOT}/control"
+chmod 0644 "${CONTROL_ROOT}/control"
 
-# ── copyright ──
-cat > "${DEB_ROOT}/usr/share/doc/${PKG_NAME}/copyright" <<'COPY'
+cat >"${DATA_ROOT}/usr/share/doc/serial-relay/copyright" <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 License: MIT
-COPY
+EOF
+chmod 0644 "${DATA_ROOT}/usr/share/doc/serial-relay/copyright"
 
-# ── Build .deb with ar + tar (POSIX, no dpkg-deb needed) ──
-# Archives are created in the parent dir to avoid tar self-referencing
-# (tar refuses to archive its own output file).
-cd "${DEB_ROOT}"
-echo "2.0" > debian-binary
-tar czf ../data.tar.gz --exclude=DEBIAN --exclude=debian-binary .
-tar czf ../control.tar.gz -C DEBIAN .
-cp debian-binary ..
-cd ..
-ar rcs "../${OUT_DIR}/${DEB_NAME}.deb" debian-binary control.tar.gz data.tar.gz
-cd - >/dev/null
+printf '2.0\n' >"${STAGE}/debian-binary"
+tar --owner=0 --group=0 -C "${CONTROL_ROOT}" -czf "${STAGE}/control.tar.gz" .
+tar --owner=0 --group=0 -C "${DATA_ROOT}" -czf "${STAGE}/data.tar.gz" .
 
-rm -rf "deb-pkg"
-echo "  -> ${OUT_DIR}/${DEB_NAME}.deb"
+OUT_PATH=$(realpath -m "${OUT_DIR}/serial-relay_${VER}_${ARCH}.deb")
+(
+    cd "${STAGE}"
+    ar rcs "${OUT_PATH}" debian-binary control.tar.gz data.tar.gz
+)
+
+echo "Package: ${OUT_PATH}"
