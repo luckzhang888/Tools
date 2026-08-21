@@ -5,10 +5,11 @@
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release
+	cargo build --release --locked
 
 override_dh_auto_test:
-	@echo "Skipping tests (no serial hardware available in build env)"
+	cargo test --locked
 
 override_dh_auto_install:
-	install -D -m 755 target/release/serial debian/serial-relay/usr/bin/serial
+	install -D -m 755 target/release/serial-relay \
+		debian/serial-relay/usr/bin/serial-relay

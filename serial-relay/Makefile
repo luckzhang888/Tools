@@ -1,55 +1,37 @@
-# Makefile for serial-relay
-#   make              — build dynamic binary
-#   make static       — build static binary
-#   make deb          — build dynamic .deb
-#   make static-deb   — build static .deb
-#   make install      — install to /usr/local/bin
-#   make clean        — remove build artifacts
+CARGO ?= cargo
+PREFIX ?= /usr/local
+DESTDIR ?=
+TARGET ?=
+PKG_ARCH ?=
 
-.PHONY: all build static deb static-deb install uninstall clean
+TARGET_ARG := $(if $(TARGET),--target $(TARGET),)
+TARGET_DIR := target/$(if $(TARGET),$(TARGET)/)release
+BIN := $(TARGET_DIR)/serial-relay
+
+.PHONY: all build check test deb install uninstall clean
 
 all: build
 
 build:
-	cargo build --release
+	$(CARGO) build --release --locked $(TARGET_ARG)
 
-static:
-	cargo build --release --target aarch64-unknown-linux-musl
-	@echo "--- static binary ---"
-	file target/aarch64-unknown-linux-musl/release/serial
-	@echo "--- ldd check ---"
-	-ldd target/aarch64-unknown-linux-musl/release/serial 2>&1
+check:
+	$(CARGO) fmt -- --check
+	$(CARGO) clippy --all-targets --locked -- -D warnings
+	$(CARGO) test --locked
 
-deb: build
-	@PACKAGE_ROOT="deb-pkg/serial-relay_0.1.0_arm64"; \
-	rm -rf deb-pkg/; \
-	mkdir -p "$$PACKAGE_ROOT/DEBIAN" "$$PACKAGE_ROOT/usr/bin" \
-	         "$$PACKAGE_ROOT/usr/share/doc/serial-relay"; \
-	install -m 755 target/release/serial "$$PACKAGE_ROOT/usr/bin/serial"; \
-	BAUD=$$(grep baud_rate Cargo.toml | head -1 | grep -oP '\d+'); \
-	cat > "$$PACKAGE_ROOT/DEBIAN/control" <<CTRL
-Package: serial-relay
-Version: 0.1.0
-Architecture: arm64
-Maintainer: linaro <linaro@localhost>
-Section: electronics
-Priority: optional
-Depends: libc6
-Description: 4-channel USB relay controller (CH340)
- Control a 4-channel USB relay module over RS-232 serial via CH340.
- Supports on/off/toggle/status operations for each channel.
- Baud rate: $$BAUD
-CTRL
-	dpkg-deb --build "$$PACKAGE_ROOT" serial-relay_0.1.0_arm64.deb; \
-	rm -rf deb-pkg/; \
-	@echo "→ serial-relay_0.1.0_arm64.deb"
+test:
+	$(CARGO) test --locked
+
+deb:
+	TARGET="$(TARGET)" PKG_ARCH="$(PKG_ARCH)" ./build-deb.sh deb
 
 install: build
-	sudo install -m 755 target/release/serial /usr/local/bin/serial
+	install -D -m 0755 "$(BIN)" "$(DESTDIR)$(PREFIX)/bin/serial-relay"
 
 uninstall:
-	sudo rm -f /usr/local/bin/serial
+	rm -f "$(DESTDIR)$(PREFIX)/bin/serial-relay"
 
 clean:
-	cargo clean
-	rm -f *.deb
+	$(CARGO) clean
+	rm -rf dist
