@@ -16,6 +16,7 @@ on:
 defaults:
   run:
     working-directory: serial-relay
+    shell: bash
 
 jobs:
   test:
