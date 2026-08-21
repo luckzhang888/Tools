@@ -1,0 +1,31 @@
+name: Cleanup temporary branches
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup-temp-branches.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete temporary branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branches=(
+            "codex/serial-relay-armv7"
+            "codex/serial-relay-readme"
+            "codex/upgrade-tool-armv7"
+            "import/serial-relay"
+          )
+          for branch in "${branches[@]}"; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}"
+            echo "deleted ${branch}"
+          done
