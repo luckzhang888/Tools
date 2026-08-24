@@ -10,6 +10,7 @@ check:
 	test -s Cargo.lock
 	test -s Dockerfile.armv7
 	test -s patches/0001-reject-storage-type-mismatch.patch
+	test -s patches/0002-add-isolated-boot-component-flashing.patch
 
 deploy:
 	./scripts/deploy.sh

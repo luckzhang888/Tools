@@ -74,6 +74,8 @@ sha256sum /myir/image/T113i/myir_image_yt113i.img
 
 ## Flash
 
+### Full-image flash
+
 > `full_erase` destroys all data on target storage. Confirm the target, image, SHA256, storage type, and the USB bus/port returned by the current scan, and obtain explicit authorization. Do not copy the placeholders literally.
 
 ```bash
@@ -87,6 +89,53 @@ sudo openixcli --backend libusb flash \
 ```
 
 A successful exit is only one gate: partition and Boot0/Boot1 verification must pass, the target must reboot, and the new system must be confirmed through its console or a system login.
+
+### Isolated boot-component flash
+
+`flash-boot` selects boot components from a complete IMAGEWTY firmware package
+and performs only the selected FES downloads and verification. It does not erase
+storage or write the MBR, normal partitions, or Preboot. Do not pass a standalone
+`u-boot.bin` as the firmware argument; the first argument must remain the complete
+IMAGEWTY package that matches the target.
+
+| Selection | Written content | Compatible boot mode |
+|---|---|---|
+| `uboot` | Normal U-Boot from the package, written through the Boot1 channel | Normal |
+| `boot0` | Storage-specific Boot0; maps to TOC0 in TOC mode | Normal, Package, TOC |
+| `boot-package` | `boot_package.fex`, written through the Boot1 channel | Package |
+
+Flash only U-Boot:
+
+```bash
+sudo openixcli --backend libusb flash-boot \
+  /myir/image/T113i/myir_image_yt113i.img \
+  --components uboot \
+  --bus <SCAN_BUS> \
+  --port <SCAN_PORT> \
+  --post-action reboot
+```
+
+Flash U-Boot and Boot0 together in Normal mode:
+
+```bash
+sudo openixcli --backend libusb flash-boot \
+  /myir/image/T113i/myir_image_yt113i.img \
+  --components uboot,boot0 \
+  --bus <SCAN_BUS> \
+  --port <SCAN_PORT> \
+  --post-action reboot
+```
+
+Use `boot-package` instead of `uboot` for Package mode. The command checks the
+firmware/target storage match and then validates the target boot mode before a
+component download. Duplicate selections are removed, and multiple components
+are always written in Boot1-then-Boot0 order.
+
+> This is a high-risk recovery function. Run `scan --detailed`, `inspect`, and
+> `sha256sum` first; confirm the target, image, boot mode, storage type, and the
+> current USB bus/port, and obtain explicit authorization. The isolated path is
+> covered by source tests and an ARMv7 build, but has not yet been validated by
+> a real single-component flash.
 
 ## Updating upstream
 

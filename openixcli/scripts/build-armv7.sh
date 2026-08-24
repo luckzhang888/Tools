@@ -15,7 +15,11 @@ TARGET_DIR="${BUILD_ROOT}/target"
 DIST_DIR=${DIST_DIR:-"${ROOT_DIR}/dist"}
 BUILDER_IMAGE=${BUILDER_IMAGE:-openixcli-armv7-builder:rust-1.96.1}
 ARTIFACT="${DIST_DIR}/openixcli-armv7"
-PATCH_FILE="${ROOT_DIR}/patches/0001-reject-storage-type-mismatch.patch"
+PATCH_DIR="${ROOT_DIR}/patches"
+
+shopt -s nullglob
+PATCH_FILES=("${PATCH_DIR}"/*.patch)
+shopt -u nullglob
 
 for required_command in docker git file readelf sha256sum tar; do
     command -v "${required_command}" >/dev/null 2>&1 || {
@@ -24,10 +28,16 @@ for required_command in docker git file readelf sha256sum tar; do
     }
 done
 
-[[ -s ${PATCH_FILE} ]] || {
-    echo "ERROR: safety patch not found: ${PATCH_FILE}" >&2
+(( ${#PATCH_FILES[@]} > 0 )) || {
+    echo "ERROR: no local patches found in ${PATCH_DIR}" >&2
     exit 1
 }
+for patch_file in "${PATCH_FILES[@]}"; do
+    [[ -s ${patch_file} ]] || {
+        echo "ERROR: empty local patch: ${patch_file}" >&2
+        exit 1
+    }
+done
 [[ -s ${ROOT_DIR}/Cargo.lock ]] || {
     echo "ERROR: pinned Cargo.lock not found" >&2
     exit 1
@@ -69,12 +79,19 @@ mkdir -p "${SOURCE_DIR}" "${TARGET_DIR}" "${DIST_DIR}"
 git -C "${CHECKOUT_DIR}" archive "${UPSTREAM_COMMIT}" | tar -x -C "${SOURCE_DIR}"
 install -m 0644 "${ROOT_DIR}/Cargo.lock" "${SOURCE_DIR}/Cargo.lock"
 git -C "${SOURCE_DIR}" init --quiet
-git -C "${SOURCE_DIR}" apply --unidiff-zero --check "${PATCH_FILE}"
-git -C "${SOURCE_DIR}" apply --unidiff-zero "${PATCH_FILE}"
+for patch_file in "${PATCH_FILES[@]}"; do
+    git -C "${SOURCE_DIR}" apply --unidiff-zero --check "${patch_file}"
+    git -C "${SOURCE_DIR}" apply --unidiff-zero "${patch_file}"
+done
 rm -rf -- "${SOURCE_DIR}/.git"
 grep -q 'storage_mismatch_is_rejected_before_any_download' \
     "${SOURCE_DIR}/src/flash/fes_handler/mod.rs" || {
     echo "ERROR: safety patch was not applied to the prepared source" >&2
+    exit 1
+}
+grep -q 'boot_component_mode_skips_erase_mbr_and_partitions' \
+    "${SOURCE_DIR}/src/flash/fes_handler/mod.rs" || {
+    echo "ERROR: boot-component patch was not applied to the prepared source" >&2
     exit 1
 }
 
@@ -126,6 +143,10 @@ if readelf -d "${built_binary}" | grep -qi 'libusb'; then
 fi
 if ! grep -aFq 'firmware storage type' "${built_binary}"; then
     echo "ERROR: built binary does not contain the storage-mismatch guard" >&2
+    exit 1
+fi
+if ! grep -aFq 'flash-boot' "${built_binary}"; then
+    echo "ERROR: built binary does not contain the flash-boot command" >&2
     exit 1
 fi
 

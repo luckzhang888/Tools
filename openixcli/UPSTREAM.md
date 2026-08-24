@@ -8,9 +8,18 @@
 
 The `upstream` branch of this repository tracks the unmodified project as the
 `openixcli` submodule. The `main` branch contains the reproducible ARMv7 build,
-deployment scripts and the local safety patch used on the auxiliary device.
+deployment scripts and local patches used on the auxiliary device.
 
-The local patch reads `storage_type` from the firmware's embedded
-`sys_config.fex`, compares it with the storage reported by FES, and rejects a
-mismatch before flash-size probing, erase or download operations. It also adds
-unit tests for parsing and the pre-erase rejection path.
+Local patches:
+
+1. `0001-reject-storage-type-mismatch.patch` reads `storage_type` from the
+   firmware's embedded `sys_config.fex`, compares it with the storage reported
+   by FES, and rejects a mismatch before flash-size probing, erase, or download.
+2. `0002-add-isolated-boot-component-flashing.patch` adds the `flash-boot`
+   command for explicit `uboot`, `boot0`, and `boot-package` selection. This
+   path skips erase, MBR, normal partitions, and Preboot; it rejects selections
+   that do not match the target boot mode before a component download.
+
+Both patches include unit and CLI coverage. The second patch is source-tested
+and ARMv7-build-tested but still requires an explicitly authorized real-device
+validation before it can be considered hardware-verified.

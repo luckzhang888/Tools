@@ -1,0 +1,703 @@
+diff --git a/src/cli.rs b/src/cli.rs
+index 6be01a0..f7fe8ef 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -5,7 +5,7 @@
+ use clap::{Parser, Subcommand, ValueEnum};
+
+ pub use crate::convert::{ConvertTarget, SecureMode};
+-use crate::flash::{FlashMode, PostAction};
++use crate::flash::{BootComponent, FlashMode, PostAction};
+ pub use crate::raw::{RawMode, RawStorage};
+
+ /// Main CLI structure
+@@ -112,6 +112,40 @@ pub enum Commands {
+         post_action: PostAction,
+     },
+
++    /// Flash only selected boot-storage components; skips erase, MBR, and partitions
++    FlashBoot {
++        /// Path to a complete IMAGEWTY firmware package containing the boot components
++        #[arg(help = "Path to firmware file")]
++        firmware: String,
++
++        /// Boot components to flash (comma-separated): uboot, boot0, boot-package
++        #[arg(
++            short = 'c',
++            long,
++            value_delimiter = ',',
++            required = true,
++            help = "Boot components: uboot, boot0, boot-package"
++        )]
++        components: Vec<BootComponent>,
++
++        /// USB bus number
++        #[arg(short, long, help = "USB bus number")]
++        bus: Option<u8>,
++
++        /// USB port number
++        #[arg(short = 'P', long, help = "USB port number")]
++        port: Option<u8>,
++
++        /// Post-flash action
++        #[arg(
++            short = 'a',
++            long,
++            default_value = "reboot",
++            help = "Post-flash action: reboot, poweroff, shutdown"
++        )]
++        post_action: PostAction,
++    },
++
+     /// Inspect firmware contents (image header, embedded files, MBR partitions)
+     Inspect {
+         /// Path to firmware file
+@@ -386,10 +420,49 @@ mod tests {
+         ));
+     }
+
++    #[test]
++    fn parses_isolated_boot_component_flash() {
++        let cli = Cli::try_parse_from([
++            "openixcli",
++            "flash-boot",
++            "firmware.fex",
++            "--components",
++            "uboot,boot0",
++            "--bus",
++            "2",
++            "--port",
++            "7",
++            "--post-action",
++            "poweroff",
++        ])
++        .unwrap();
++
++        assert!(matches!(
++            cli.command,
++            Some(Commands::FlashBoot {
++                firmware,
++                components,
++                bus: Some(2),
++                port: Some(7),
++                post_action: PostAction::PowerOff,
++            }) if firmware == "firmware.fex"
++                && components == vec![BootComponent::Uboot, BootComponent::Boot0]
++        ));
++    }
++
+     #[test]
+     fn rejects_invalid_values_and_missing_required_arguments() {
+         assert!(Cli::try_parse_from(["openixcli", "--backend", "invalid"]).is_err());
+         assert!(Cli::try_parse_from(["openixcli", "flash"]).is_err());
++        assert!(Cli::try_parse_from(["openixcli", "flash-boot", "firmware.fex"]).is_err());
++        assert!(Cli::try_parse_from([
++            "openixcli",
++            "flash-boot",
++            "firmware.fex",
++            "--components",
++            "boot1"
++        ])
++        .is_err());
+         assert!(Cli::try_parse_from(["openixcli", "raw"]).is_err());
+         assert!(
+             Cli::try_parse_from(["openixcli", "flash", "firmware.fex", "--mode", "invalid"])
+diff --git a/src/commands/flash.rs b/src/commands/flash.rs
+index 0ce8966..c080e0b 100644
+--- a/src/commands/flash.rs
++++ b/src/commands/flash.rs
+@@ -19,6 +19,7 @@ pub async fn execute(args: FlashArgs) -> anyhow::Result<()> {
+
+     let (packer, request) = prepare_flash(&args, &logger)?;
+
++    let boot_component_flash = request.boot_components.is_some();
+     let mut flasher = Flasher::new(packer, request, logger.clone());
+     if let Err(e) = flasher.execute().await {
+         logger.error(&format!("Flash failed: {}", e));
+@@ -26,7 +27,11 @@ pub async fn execute(args: FlashArgs) -> anyhow::Result<()> {
+     }
+
+     println!();
+-    logger.stage_complete("All partitions flashed successfully");
++    if boot_component_flash {
++        logger.stage_complete("Selected boot components flashed successfully");
++    } else {
++        logger.stage_complete("All partitions flashed successfully");
++    }
+
+     Ok(())
+ }
+@@ -83,6 +88,7 @@ mod tests {
+             verify: false,
+             mode: FlashMode::Partition,
+             partitions: Some(vec!["boot".into()]),
++            boot_components: None,
+             post_action: PostAction::Reboot,
+             verbose: false,
+         }
+@@ -121,6 +127,7 @@ mod tests {
+         assert_eq!(request.device.selected_pair(), Some((1, 2)));
+         assert_eq!(request.mode, FlashMode::Partition);
+         assert_eq!(request.partitions, Some(vec!["boot".to_string()]));
++        assert_eq!(request.boot_components, None);
+
+         let no_selector = FlashArgs {
+             bus: None,
+diff --git a/src/commands/types.rs b/src/commands/types.rs
+index 95536b8..4c3a585 100644
+--- a/src/commands/types.rs
++++ b/src/commands/types.rs
+@@ -4,7 +4,7 @@
+
+ use std::path::PathBuf;
+
+-use crate::flash::{DeviceSelector, FlashMode, FlashRequest, PostAction};
++use crate::flash::{BootComponent, DeviceSelector, FlashMode, FlashRequest, PostAction};
+
+ /// Arguments for the flash command
+ ///
+@@ -24,19 +24,25 @@ pub struct FlashArgs {
+     pub verify: bool,
+     pub mode: FlashMode,
+     pub partitions: Option<Vec<String>>,
++    pub boot_components: Option<Vec<BootComponent>>,
+     pub post_action: PostAction,
+     pub verbose: bool,
+ }
+
+ impl FlashArgs {
+     pub fn request(&self) -> FlashRequest {
+-        FlashRequest::new(
++        let request = FlashRequest::new(
+             DeviceSelector::new(self.bus, self.port),
+             self.verify,
+             self.mode,
+             self.partitions.clone(),
+             self.post_action,
+-        )
++        );
++
++        match &self.boot_components {
++            Some(components) => request.with_boot_components(components.clone()),
++            None => request,
++        }
+     }
+ }
+
+@@ -92,6 +98,7 @@ mod tests {
+             verify: false,
+             mode: FlashMode::Partition,
+             partitions: Some(vec!["boot".to_string()]),
++            boot_components: None,
+             post_action: PostAction::PowerOff,
+             verbose: true,
+         };
+@@ -102,5 +109,6 @@ mod tests {
+         assert_eq!(request.post_action, PostAction::PowerOff);
+         assert!(!request.verify);
+         assert_eq!(request.partitions, Some(vec!["boot".to_string()]));
++        assert_eq!(request.boot_components, None);
+     }
+ }
+diff --git a/src/flash/fes_handler/boot_download.rs b/src/flash/fes_handler/boot_download.rs
+index edd7e33..61f7414 100644
+--- a/src/flash/fes_handler/boot_download.rs
++++ b/src/flash/fes_handler/boot_download.rs
+@@ -7,6 +7,7 @@ use crate::config::mbr_parser::EFEX_CRC32_VALID_FLAG;
+ use crate::firmware::{OpenixPacker, PackerError, StorageType};
+ use crate::flash::fes_handler::types::fes_data_type;
+ use crate::flash::protocol::FesOps;
++use crate::flash::BootComponent;
+ use crate::utils::{FlashError, FlashResult, Logger};
+ use libefex::FesDataType;
+
+@@ -46,6 +47,74 @@ impl<'a> BootDownload<'a> {
+         Ok(())
+     }
+
++    /// Download only explicitly selected persistent boot components.
++    ///
++    /// This path does not download Preboot. The caller is responsible for
++    /// skipping erase, MBR, and normal partition stages.
++    pub async fn execute_selected<C: FesOps>(
++        &self,
++        ctx: &C,
++        packer: &mut OpenixPacker,
++        secure: u32,
++        storage_type: u32,
++        components: &[BootComponent],
++    ) -> FlashResult<()> {
++        self.validate_selected_components(secure, components)?;
++
++        self.logger.info(&format!(
++            "Downloading selected boot components: {}",
++            components
++                .iter()
++                .map(ToString::to_string)
++                .collect::<Vec<_>>()
++                .join(",")
++        ));
++
++        if components.contains(&BootComponent::Uboot)
++            || components.contains(&BootComponent::BootPackage)
++        {
++            self.download_boot1(ctx, packer, secure, storage_type)
++                .await?;
++        }
++        if components.contains(&BootComponent::Boot0) {
++            self.download_boot0(ctx, packer, secure, storage_type)
++                .await?;
++        }
++
++        self.logger
++            .stage_complete("Selected boot components downloaded");
++        Ok(())
++    }
++
++    fn validate_selected_components(
++        &self,
++        secure: u32,
++        components: &[BootComponent],
++    ) -> FlashResult<()> {
++        let incompatible = match secure {
++            BOOT_FILE_MODE_NORMAL => components.contains(&BootComponent::BootPackage),
++            BOOT_FILE_MODE_PKG => components.contains(&BootComponent::Uboot),
++            BOOT_FILE_MODE_TOC => {
++                components.contains(&BootComponent::Uboot)
++                    || components.contains(&BootComponent::BootPackage)
++            }
++            _ => {
++                return Err(FlashError::InvalidFirmwareFormat(format!(
++                    "unsupported target boot mode: {secure}"
++                )))
++            }
++        };
++
++        if incompatible {
++            return Err(FlashError::InvalidFirmwareFormat(format!(
++                "selected boot components are incompatible with target boot mode {}",
++                crate::config::boot_header::get_sunxi_boot_file_mode_string(secure)
++            )));
++        }
++
++        Ok(())
++    }
++
+     /// Download the optional preboot image before Boot1.
+     async fn download_preboot<C: FesOps>(
+         &self,
+@@ -284,6 +353,105 @@ mod tests {
+         assert_eq!(fes_data_type::PREBOOT, 0x7f08);
+     }
+
++    #[tokio::test]
++    async fn selected_normal_boot_components_write_only_boot1_then_boot0() {
++        let firmware = test_firmware(&[
++            FirmwareEntry {
++                filename: "preboot.fex",
++                maintype: "12345678",
++                subtype: "1234567890PREB_0",
++                data: b"preboot",
++            },
++            FirmwareEntry {
++                filename: "uboot.fex",
++                maintype: "12345678",
++                subtype: "UBOOT_0000000000",
++                data: b"boot1",
++            },
++            FirmwareEntry {
++                filename: "boot0.fex",
++                maintype: "12345678",
++                subtype: "1234567890BUFS_0",
++                data: b"boot0",
++            },
++        ]);
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++
++        BootDownload::new(&logger)
++            .execute_selected(
++                &ctx,
++                &mut packer,
++                BOOT_FILE_MODE_NORMAL,
++                StorageType::Ufs as u32,
++                &[BootComponent::Boot0, BootComponent::Uboot],
++            )
++            .await
++            .unwrap();
++
++        let downloads = ctx.downloads.borrow();
++        assert_eq!(downloads.len(), 2);
++        assert_eq!(downloads[0].data_type, FesDataType::Boot1);
++        assert_eq!(downloads[0].data, b"boot1");
++        assert_eq!(downloads[1].data_type, FesDataType::Boot0);
++        assert_eq!(downloads[1].data, b"boot0");
++        assert_eq!(
++            &*ctx.verify_status_calls.borrow(),
++            &[fes_data_type::BOOT1, fes_data_type::BOOT0]
++        );
++    }
++
++    #[tokio::test]
++    async fn selected_package_component_uses_boot_package_and_rejects_wrong_mode() {
++        let config = image_cfg_entries();
++        let bootpkg = config
++            .iter()
++            .find(|entry| entry.filename == "boot_package.fex")
++            .unwrap();
++        let firmware = test_firmware(&[FirmwareEntry {
++            filename: &bootpkg.filename,
++            maintype: &bootpkg.maintype,
++            subtype: &bootpkg.subtype,
++            data: b"package",
++        }]);
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++
++        BootDownload::new(&logger)
++            .execute_selected(
++                &ctx,
++                &mut packer,
++                BOOT_FILE_MODE_PKG,
++                StorageType::Emmc as u32,
++                &[BootComponent::BootPackage],
++            )
++            .await
++            .unwrap();
++        assert_eq!(ctx.downloads.borrow().len(), 1);
++        assert_eq!(ctx.downloads.borrow()[0].data_type, FesDataType::Boot1);
++        assert_eq!(ctx.downloads.borrow()[0].data, b"package");
++
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let wrong_mode = MockProtocol::default();
++        let error = BootDownload::new(&logger)
++            .execute_selected(
++                &wrong_mode,
++                &mut packer,
++                BOOT_FILE_MODE_NORMAL,
++                StorageType::Emmc as u32,
++                &[BootComponent::BootPackage],
++            )
++            .await
++            .unwrap_err();
++        assert!(matches!(error, FlashError::InvalidFirmwareFormat(_)));
++        assert!(wrong_mode.downloads.borrow().is_empty());
++    }
++
+     #[test]
+     fn boot_item_selection_covers_modes_and_storage_types() {
+         let logger = Logger::new();
+diff --git a/src/flash/fes_handler/mod.rs b/src/flash/fes_handler/mod.rs
+index 31dfa3d..52c1df9 100644
+--- a/src/flash/fes_handler/mod.rs
++++ b/src/flash/fes_handler/mod.rs
+@@ -73,6 +73,20 @@ impl<'a> FesHandler<'a> {
+         packer: &mut OpenixPacker,
+         request: &FlashRequest,
+     ) -> FlashResult<()> {
++        if let Some(components) = request.boot_components.as_deref() {
++            if components.is_empty() {
++                return Err(FlashError::InvalidFirmwareFormat(
++                    "at least one boot component must be selected".to_string(),
++                ));
++            }
++            if request.partitions.is_some() || request.custom_layout.is_some() {
++                return Err(FlashError::InvalidFirmwareFormat(
++                    "boot-component flashing cannot include partitions or a custom layout"
++                        .to_string(),
++                ));
++            }
++        }
++
+         self.logger.begin_stage(StageType::FesQuery);
+
+         let secure = ctx
+@@ -110,6 +124,16 @@ impl<'a> FesHandler<'a> {
+
+         self.logger.complete_stage();
+
++        if let Some(components) = request.boot_components.as_deref() {
++            self.logger.begin_stage(StageType::FesBoot);
++            let boot_download = BootDownload::new(&*self.logger);
++            boot_download
++                .execute_selected(ctx, packer, secure, storage_type, components)
++                .await?;
++            self.logger.complete_stage();
++            return Ok(());
++        }
++
+         if request.mode != FlashMode::Partition {
+             self.logger.begin_stage(StageType::FesErase);
+             let erase_flag = EraseFlag::new(&*self.logger);
+@@ -233,7 +257,7 @@ fn prepare_custom_downloads(
+ mod tests {
+     use super::*;
+     use crate::flash::protocol::tests::MockProtocol;
+-    use crate::flash::{CustomFlashLayout, ExternalPartition};
++    use crate::flash::{BootComponent, CustomFlashLayout, ExternalPartition};
+     use crate::flash::{DeviceSelector, PostAction};
+     use crate::test_support::{mbr_bytes, test_firmware, FirmwareEntry};
+     use libefex::FesDataType;
+@@ -370,6 +394,67 @@ mod tests {
+         assert_ne!(ctx.downloads.borrow()[0].data_type, FesDataType::Erase);
+     }
+
++    #[tokio::test]
++    async fn boot_component_mode_skips_erase_mbr_and_partitions() {
++        let firmware = complete_firmware();
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++        let request =
++            request(FlashMode::FullErase).with_boot_components(vec![BootComponent::Uboot]);
++
++        FesHandler::new(&mut logger)
++            .handle(&ctx, &mut packer, &request)
++            .await
++            .unwrap();
++
++        let downloads = ctx.downloads.borrow();
++        assert_eq!(downloads.len(), 1);
++        assert_eq!(downloads[0].data_type, FesDataType::Boot1);
++        assert_eq!(downloads[0].data, b"boot1");
++        assert!(ctx.flash_switches.borrow().is_empty());
++    }
++
++    #[tokio::test]
++    async fn empty_boot_component_selection_is_rejected_before_writes() {
++        let firmware = complete_firmware();
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++        let request = request(FlashMode::Partition).with_boot_components(Vec::new());
++
++        let error = FesHandler::new(&mut logger)
++            .handle(&ctx, &mut packer, &request)
++            .await
++            .unwrap_err();
++
++        assert!(matches!(error, FlashError::InvalidFirmwareFormat(_)));
++        assert!(ctx.downloads.borrow().is_empty());
++        assert!(ctx.flash_switches.borrow().is_empty());
++    }
++
++    #[tokio::test]
++    async fn boot_components_cannot_be_combined_with_partitions() {
++        let firmware = complete_firmware();
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++        let mut request =
++            request(FlashMode::Partition).with_boot_components(vec![BootComponent::Boot0]);
++        request.partitions = Some(vec!["system".to_string()]);
++
++        let error = FesHandler::new(&mut logger)
++            .handle(&ctx, &mut packer, &request)
++            .await
++            .unwrap_err();
++
++        assert!(matches!(error, FlashError::InvalidFirmwareFormat(_)));
++        assert!(ctx.downloads.borrow().is_empty());
++    }
++
+     #[tokio::test]
+     async fn custom_layout_replaces_the_firmware_mbr_and_partition_source() {
+         let raw = crate::test_support::temp_file("fes-custom-raw", b"raw payload");
+diff --git a/src/flash/mod.rs b/src/flash/mod.rs
+index 1ac2634..d7bb8bb 100644
+--- a/src/flash/mod.rs
++++ b/src/flash/mod.rs
+@@ -15,7 +15,8 @@ pub use events::{FlashEvent, FlashEventSink, FlashLogLevel};
+ pub use fel_handler::FelHandler;
+ pub use fes_handler::FesHandler;
+ pub use request::{
+-    CustomFlashLayout, DeviceSelector, ExternalPartition, FlashMode, FlashRequest, PostAction,
++    BootComponent, CustomFlashLayout, DeviceSelector, ExternalPartition, FlashMode, FlashRequest,
++    PostAction,
+ };
+
+ use crate::firmware::OpenixPacker;
+diff --git a/src/flash/request.rs b/src/flash/request.rs
+index c621119..99e87ee 100644
+--- a/src/flash/request.rs
++++ b/src/flash/request.rs
+@@ -4,6 +4,40 @@ use std::fmt;
+ use std::path::{Path, PathBuf};
+ use std::str::FromStr;
+
++/// Boot-storage component selected for an isolated boot-component flash.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum BootComponent {
++    /// The normal-mode U-Boot image written through the FES Boot1 channel.
++    Uboot,
++    /// The storage-specific Boot0 image.
++    Boot0,
++    /// The package-mode boot package written through the FES Boot1 channel.
++    BootPackage,
++}
++
++impl FromStr for BootComponent {
++    type Err = String;
++
++    fn from_str(value: &str) -> Result<Self, Self::Err> {
++        match value {
++            "uboot" => Ok(Self::Uboot),
++            "boot0" => Ok(Self::Boot0),
++            "boot-package" => Ok(Self::BootPackage),
++            _ => Err(format!("Invalid boot component: {value}")),
++        }
++    }
++}
++
++impl fmt::Display for BootComponent {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Uboot => write!(f, "uboot"),
++            Self::Boot0 => write!(f, "boot0"),
++            Self::BootPackage => write!(f, "boot-package"),
++        }
++    }
++}
++
+ /// Flash mode options.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum FlashMode {
+@@ -220,6 +254,7 @@ pub struct FlashRequest {
+     pub verify: bool,
+     pub mode: FlashMode,
+     pub partitions: Option<Vec<String>>,
++    pub boot_components: Option<Vec<BootComponent>>,
+     pub post_action: PostAction,
+     pub custom_layout: Option<CustomFlashLayout>,
+ }
+@@ -237,6 +272,7 @@ impl FlashRequest {
+             verify,
+             mode,
+             partitions,
++            boot_components: None,
+             post_action,
+             custom_layout: None,
+         }
+@@ -246,6 +282,17 @@ impl FlashRequest {
+         self.custom_layout = Some(layout);
+         self
+     }
++
++    pub fn with_boot_components(mut self, components: Vec<BootComponent>) -> Self {
++        let mut unique = Vec::new();
++        for component in components {
++            if !unique.contains(&component) {
++                unique.push(component);
++            }
++        }
++        self.boot_components = Some(unique);
++        self
++    }
+ }
+
+ #[cfg(test)]
+@@ -267,6 +314,21 @@ mod tests {
+         }
+     }
+
++    #[test]
++    fn boot_component_round_trips_cli_values() {
++        let cases = [
++            ("uboot", BootComponent::Uboot),
++            ("boot0", BootComponent::Boot0),
++            ("boot-package", BootComponent::BootPackage),
++        ];
++
++        for (value, component) in cases {
++            assert_eq!(value.parse::<BootComponent>().unwrap(), component);
++            assert_eq!(component.to_string(), value);
++        }
++        assert!("boot1".parse::<BootComponent>().is_err());
++    }
++
+     #[test]
+     fn post_action_round_trips_cli_values() {
+         let cases = [
+@@ -348,9 +410,31 @@ mod tests {
+         assert!(!request.verify);
+         assert_eq!(request.mode, FlashMode::KeepData);
+         assert_eq!(request.partitions, Some(vec!["boot".to_string()]));
++        assert_eq!(request.boot_components, None);
+         assert_eq!(request.post_action, PostAction::Shutdown);
+     }
+
++    #[test]
++    fn flash_request_deduplicates_boot_components() {
++        let request = FlashRequest::new(
++            DeviceSelector::default(),
++            true,
++            FlashMode::Partition,
++            None,
++            PostAction::Reboot,
++        )
++        .with_boot_components(vec![
++            BootComponent::Uboot,
++            BootComponent::Boot0,
++            BootComponent::Uboot,
++        ]);
++
++        assert_eq!(
++            request.boot_components,
++            Some(vec![BootComponent::Uboot, BootComponent::Boot0])
++        );
++    }
++
+     #[test]
+     fn flash_request_can_carry_an_external_layout() {
+         let layout = CustomFlashLayout::new(
+diff --git a/src/main.rs b/src/main.rs
+index 95ce237..d56a12d 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -18,6 +18,7 @@ use clap::Parser;
+ use openixcli::cli::{Cli, Commands, UsbBackendArg};
+ use openixcli::commands::{self, parse_partition_list, FlashArgs};
+ use openixcli::convert::ConvertOptions;
++use openixcli::flash::FlashMode;
+ use openixcli::raw::RawOptions;
+ use openixcli::tui;
+ use openixcli::utils::TermLogger;
+@@ -93,6 +94,30 @@ async fn main() -> anyhow::Result<()> {
+                 verify,
+                 mode,
+                 partitions: parse_partition_list(partitions),
++                boot_components: None,
++                post_action,
++                verbose: cli.verbose,
++            };
++
++            commands::flash::execute(args).await?;
++        }
++        Some(Commands::FlashBoot {
++            firmware,
++            components,
++            bus,
++            port,
++            post_action,
++        }) => {
++            setup_logging(cli.verbose);
++
++            let args = FlashArgs {
++                firmware_path: firmware.into(),
++                bus,
++                port,
++                verify: true,
++                mode: FlashMode::Partition,
++                partitions: None,
++                boot_components: Some(components),
+                 post_action,
+                 verbose: cli.verbose,
+             };

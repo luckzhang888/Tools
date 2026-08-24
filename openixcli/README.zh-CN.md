@@ -84,6 +84,8 @@ sha256sum /myir/image/T113i/myir_image_yt113i.img
 
 ## 5. 烧录
 
+### 5.1 整包烧录
+
 > `full_erase` 会删除目标存储中的全部数据。必须先确认目标板、镜像、SHA256、存储类型以及扫描得到的 USB bus/port，并取得明确烧录授权。不要照抄示例中的占位值。
 
 ```bash
@@ -97,6 +99,48 @@ sudo openixcli --backend libusb flash \
 ```
 
 烧录成功必须同时满足：命令退出码为 0、各分区和 Boot0/Boot1 校验通过、目标板重启，并通过串口或系统登录确认新系统启动。
+
+### 5.2 单独烧录启动组件
+
+`flash-boot` 从完整 IMAGEWTY 固件包中选择启动组件，只执行所选组件的 FES 下载和校验。
+它不会擦除存储器，也不会写入 MBR、普通分区或 Preboot。不要把独立的 `u-boot.bin`
+直接作为固件参数；第一个参数仍必须是与目标板匹配的完整 IMAGEWTY 固件包。
+
+| 选择值 | 写入内容 | 适用启动模式 |
+|---|---|---|
+| `uboot` | 固件中的普通 U-Boot，通过 Boot1 通道写入 | Normal |
+| `boot0` | 按目标存储类型选择 Boot0；TOC 模式对应 TOC0 | Normal、Package、TOC |
+| `boot-package` | 固件中的 `boot_package.fex`，通过 Boot1 通道写入 | Package |
+
+仅烧录 U-Boot：
+
+```bash
+sudo openixcli --backend libusb flash-boot \
+  /myir/image/T113i/myir_image_yt113i.img \
+  --components uboot \
+  --bus <SCAN_BUS> \
+  --port <SCAN_PORT> \
+  --post-action reboot
+```
+
+Normal 模式同时烧录 U-Boot 和 Boot0：
+
+```bash
+sudo openixcli --backend libusb flash-boot \
+  /myir/image/T113i/myir_image_yt113i.img \
+  --components uboot,boot0 \
+  --bus <SCAN_BUS> \
+  --port <SCAN_PORT> \
+  --post-action reboot
+```
+
+Package 模式应将 `uboot` 改为 `boot-package`。命令会先核对镜像与目标存储类型，
+再核对目标启动模式；选择与目标模式不兼容时会在启动组件下载前退出。多个组件会去重，
+并固定按 Boot1、Boot0 的顺序写入。
+
+> 这是高风险恢复功能。必须先执行 `scan --detailed`、`inspect` 和 `sha256sum`，确认目标、
+> 镜像、启动模式、存储类型及本次 USB bus/port，并取得明确烧录授权。该独立烧录功能已通过
+> 源码自动测试和 ARMv7 构建验证，真机单组件烧录尚未验证。
 
 ## 更新上游版本
 
