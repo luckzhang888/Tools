@@ -1,0 +1,76 @@
+diff --git a/src/flash/fes_handler/mod.rs b/src/flash/fes_handler/mod.rs
+index 4aa8a1b..31dfa3d 100644
+--- a/src/flash/fes_handler/mod.rs
++++ b/src/flash/fes_handler/mod.rs
+@@ -37,0 +38,18 @@ pub struct FesHandler<'a> {
++fn firmware_storage_type(packer: &mut OpenixPacker) -> Option<StorageType> {
++    let data = packer.get_file_data_by_filename("sys_config.fex").ok()?;
++    parse_firmware_storage_type(&data)
++}
++
++fn parse_firmware_storage_type(data: &[u8]) -> Option<StorageType> {
++    let text = String::from_utf8_lossy(data);
++
++    text.lines().find_map(|line| {
++        let line = line.split(';').next().unwrap_or("").trim();
++        let (key, value) = line.split_once('=')?;
++        if key.trim() != "storage_type" {
++            return None;
++        }
++        value.trim().parse::<u32>().ok().map(StorageType::from)
++    })
++}
++
+@@ -71,4 +89,13 @@ impl<'a> FesHandler<'a> {
+-        self.logger.info(&format!(
+-            "Storage type: {}",
+-            StorageType::from(storage_type)
+-        ));
++        let detected_storage = StorageType::from(storage_type);
++        self.logger
++            .info(&format!("Storage type: {}", detected_storage));
++
++        if let Some(expected_storage) = firmware_storage_type(packer) {
++            self.logger
++                .info(&format!("Firmware storage type: {}", expected_storage));
++            if expected_storage != StorageType::Auto && expected_storage != detected_storage {
++                return Err(FlashError::InvalidFirmwareFormat(format!(
++                    "firmware storage type {expected_storage} does not match target storage type {detected_storage}"
++                )));
++            }
++        }
+@@ -265,0 +293,34 @@ mod tests {
++    #[test]
++    fn storage_type_parser_handles_comments_and_whitespace() {
++        assert_eq!(
++            parse_firmware_storage_type(
++                b"; storage_type = 1\n[storage]\n storage_type = 2 ; eMMC\n"
++            ),
++            Some(StorageType::Emmc)
++        );
++        assert_eq!(parse_firmware_storage_type(b"storage_type=invalid\n"), None);
++    }
++
++    #[tokio::test]
++    async fn storage_mismatch_is_rejected_before_any_download() {
++        let firmware = test_firmware(&[FirmwareEntry {
++            filename: "sys_config.fex",
++            maintype: "COMMON",
++            subtype: "SYS_CONFIG000000",
++            data: b"storage_type = 1\n",
++        }]);
++        let mut packer = OpenixPacker::new();
++        packer.load(firmware.path()).unwrap();
++        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
++        let ctx = MockProtocol::default();
++
++        let error = FesHandler::new(&mut logger)
++            .handle(&ctx, &mut packer, &request(FlashMode::FullErase))
++            .await
++            .unwrap_err();
++
++        assert!(matches!(error, FlashError::InvalidFirmwareFormat(_)));
++        assert!(ctx.downloads.borrow().is_empty());
++        assert!(ctx.flash_switches.borrow().is_empty());
++    }
++

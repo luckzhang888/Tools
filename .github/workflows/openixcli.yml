@@ -1,0 +1,42 @@
+name: openixcli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openixcli/**"
+      - ".github/workflows/openixcli.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "openixcli/**"
+      - ".github/workflows/openixcli.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: openixcli
+    shell: bash
+
+jobs:
+  armv7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scripts
+        run: make check
+      - name: Build ARMv7 binary
+        run: make build-armv7
+      - name: Verify artifact
+        run: |
+          file dist/openixcli-armv7
+          file dist/openixcli-armv7 | grep -q 'ELF 32-bit.*ARM'
+          ! readelf -d dist/openixcli-armv7 | grep -qi libusb
+          cd dist
+          sha256sum --check openixcli-armv7.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openixcli-armv7
+          path: |
+            openixcli/dist/openixcli-armv7
+            openixcli/dist/openixcli-armv7.sha256
