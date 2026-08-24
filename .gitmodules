@@ -2,3 +2,7 @@
 	path = upgrade-tool
 	url = https://github.com/bitshelf/upgrade_tool.git
 	branch = main
+[submodule "openixcli"]
+	path = openixcli
+	url = https://github.com/YuzukiTsuru/OpenixCLI.git
+	branch = master
