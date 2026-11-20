@@ -36,7 +36,7 @@ private fun ReminderApp(activity: MainActivity) {
     var tab by remember { mutableIntStateOf(0) }
     var revision by remember { mutableIntStateOf(0) }
     var info by remember { mutableStateOf("") }
-    val refresh = { revision++ }
+    val refresh: () -> Unit = { revision += 1 }
 
     val locationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
